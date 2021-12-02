@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -21,17 +24,26 @@ import (
 )
 
 var (
-	name               = "my-app"
-	namespace          = "runtime"
-	stack              = "java-microprofile"
-	appImage           = "my-image"
-	replicas     int32 = 2
-	expose             = true
-	createKNS          = true
-	targetCPUPer int32 = 30
-	targetPort   int32 = 3333
-	nodePort     int32 = 3011
-	autoscaling        = &appstacksv1beta2.RuntimeComponentAutoScaling{
+	name                     = "my-app"
+	namespace                = "runtime"
+	labels                   = map[string]string{"key1": "value1"}
+	annotations              = map[string]string{"key2": "value2"}
+	objMeta                  = metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels}
+	objMetaAnnos             = metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels, Annotations: annotations}
+	applicationVersion       = "testing"
+	stack                    = "java-microprofile"
+	appImage                 = "my-image"
+	replicas           int32 = 2
+	expose                   = true
+	createKNS                = true
+	targetCPUPer       int32 = 30
+	targetPort         int32 = 3333
+	nodePort           int32 = 3011
+	ports                    = []corev1.ServicePort{{Name: "https", Port: 9080, TargetPort: intstr.FromInt(9000)}, {Port: targetPort}}
+	targetHelper       int32 = 9000
+	svcPortName              = "myservice"
+	serviceType2             = corev1.ServiceTypeNodePort
+	autoscaling              = &appstacksv1beta2.RuntimeComponentAutoScaling{
 		TargetCPUUtilizationPercentage: &targetCPUPer,
 		MinReplicas:                    &replicas,
 		MaxReplicas:                    3,
@@ -44,9 +56,7 @@ var (
 	serviceType        = corev1.ServiceTypeClusterIP
 	service            = &appstacksv1beta2.RuntimeComponentService{Type: &serviceType, Port: 8443}
 	deploymentAnnos    = map[string]string{"depAnno": "depAnno"}
-	deployment         = &appstacksv1beta2.RuntimeComponentDeployment{Annotations: deploymentAnnos}
 	ssAnnos            = map[string]string{"setAnno": "setAnno"}
-	statefulSet        = &appstacksv1beta2.RuntimeComponentStatefulSet{Annotations: ssAnnos}
 	volumeCT           = &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc", Namespace: namespace},
 		TypeMeta:   metav1.TypeMeta{Kind: "StatefulSet"}}
@@ -80,6 +90,11 @@ var (
 		corev1.ResourceCPU: {},
 	}
 	resourceContraints = &corev1.ResourceRequirements{Limits: resLimits}
+	key                = "key"
+	crt                = "crt"
+	ca                 = "ca"
+	destCACert         = "destCACert"
+	emptyString        = ""
 )
 
 type Test struct {
@@ -88,23 +103,229 @@ type Test struct {
 	actual   interface{}
 }
 
+func TestCustomizeDeployment(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	spec := appstacksv1beta2.RuntimeComponentSpec{ApplicationName: appImage, ApplicationVersion: applicationVersion, Replicas: &replicas}
+	deployment, runtime := appsv1.Deployment{}, createRuntimeComponent(objMeta, spec)
+	CustomizeDeployment(&deployment, runtime)
+
+	// Test Deployment Spec
+	testDP := []Test{
+		{"Deployment selector", name, deployment.Spec.Selector.MatchLabels["app.kubernetes.io/instance"]},
+		{"Deployment labels", name, deployment.Labels["app.kubernetes.io/name"]},
+		{"Deployment labels", "value1", deployment.Labels["key1"]},
+		{"Deployment replicas", replicas, *deployment.Spec.Replicas},
+	}
+	verifyTests(testDP, t)
+
+	deploymentStrategyTests(t)
+}
+
+func deploymentStrategyTests(t *testing.T) {
+	// Set updateStrategy to RollingUpdate
+	rollingUpdate := appsv1.RollingUpdateDeployment{MaxSurge: &intstr.IntOrString{IntVal: 1}, MaxUnavailable: &intstr.IntOrString{IntVal: 2}}
+	updateStrategy := appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &rollingUpdate}
+	runtimeDeployment := &appstacksv1beta2.RuntimeComponentDeployment{UpdateStrategy: &updateStrategy}
+	spec := appstacksv1beta2.RuntimeComponentSpec{
+		ApplicationImage: appImage,
+		Deployment:       runtimeDeployment,
+		Replicas:         &replicas,
+	}
+	deployment, runtime := appsv1.Deployment{}, createRuntimeComponent(objMeta, spec)
+	CustomizeDeployment(&deployment, runtime)
+
+	strategy := deployment.Spec.Strategy.Type
+	maxSurge := deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
+	maxUnavailable := (deployment.Spec.Strategy.RollingUpdate.MaxUnavailable).IntVal
+
+	testStrategy1 := []Test{
+		{"Strategy should be RollingUpdate", appsv1.RollingUpdateDeploymentStrategyType, strategy},
+		{"MaxSurge should be 1", int32(1), maxSurge},
+		{"MaxUnavailbale should be 2", int32(2), maxUnavailable},
+	}
+	verifyTests(testStrategy1, t)
+
+	// Set updateStrategy to Recreate
+	updateStrategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	runtimeDeployment = &appstacksv1beta2.RuntimeComponentDeployment{UpdateStrategy: &updateStrategy}
+	spec.Deployment = runtimeDeployment
+	deployment, runtime = appsv1.Deployment{}, createRuntimeComponent(objMeta, spec)
+	CustomizeDeployment(&deployment, runtime)
+
+	strategy = deployment.Spec.Strategy.Type
+
+	testStrategy2 := []Test{
+		{"Strategy should be Recreate", appsv1.RecreateDeploymentStrategyType, strategy},
+	}
+	verifyTests(testStrategy2, t)
+
+	// Remove UpdateStrategy
+	runtimeDeployment = &appstacksv1beta2.RuntimeComponentDeployment{}
+	spec.Deployment = runtimeDeployment
+	deployment, runtime = appsv1.Deployment{}, createRuntimeComponent(objMeta, spec)
+	CustomizeDeployment(&deployment, runtime)
+
+	strategy = deployment.Spec.Strategy.Type
+
+	testStrategy3 := []Test{
+		{"Strategy should be RollingUpdate", appsv1.RollingUpdateDeploymentStrategyType, strategy},
+	}
+	verifyTests(testStrategy3, t)
+}
+
+func TestCustomizeStatefulSet(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	spec := appstacksv1beta2.RuntimeComponentSpec{ApplicationName: appImage, Service: service, ApplicationVersion: applicationVersion, Replicas: &replicas}
+	statefulset, runtime := appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
+	CustomizeStatefulSet(&statefulset, runtime)
+
+	// Test StatefulSet Spec
+	testSS := []Test{
+		{"Statefulset replicas", replicas, *statefulset.Spec.Replicas},
+		{"Statefulset selector", name, statefulset.Spec.Selector.MatchLabels["app.kubernetes.io/instance"]},
+		{"Statefulset labels", name, statefulset.Labels["app.kubernetes.io/name"]},
+		{"Statefulset labels", "value1", statefulset.Labels["key1"]},
+		{"Statefulset service name", name + "-headless", statefulset.Spec.ServiceName},
+	}
+	verifyTests(testSS, t)
+
+	statefulSetStrategyTests(t)
+}
+
+func statefulSetStrategyTests(t *testing.T) {
+	var partition int32 = 2
+
+	// Set updateStrategy to RollingUpdate
+	rollingUpdate := appsv1.RollingUpdateStatefulSetStrategy{Partition: &partition}
+	updateStrategy := appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType, RollingUpdate: &rollingUpdate}
+	runtimeStatefulSet := &appstacksv1beta2.RuntimeComponentStatefulSet{UpdateStrategy: &updateStrategy}
+	spec = appstacksv1beta2.RuntimeComponentSpec{ApplicationImage: appImage, StatefulSet: runtimeStatefulSet, Replicas: &replicas}
+	statefulSet, runtime := appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
+	CustomizeStatefulSet(&statefulSet, runtime)
+
+	strategy := statefulSet.Spec.UpdateStrategy.Type
+	partitionVal := *statefulSet.Spec.UpdateStrategy.RollingUpdate.Partition
+
+	testStrategy1 := []Test{
+		{"Strategy should be RollingUpdate", appsv1.RollingUpdateStatefulSetStrategyType, strategy},
+		{"Partition should be 1", int32(2), partitionVal},
+	}
+	verifyTests(testStrategy1, t)
+
+	// Set updateStrategy to OnDelete
+	updateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType}
+	runtimeStatefulSet = &appstacksv1beta2.RuntimeComponentStatefulSet{UpdateStrategy: &updateStrategy}
+	spec.StatefulSet = runtimeStatefulSet
+	statefulSet, runtime = appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
+	CustomizeStatefulSet(&statefulSet, runtime)
+
+	strategy = statefulSet.Spec.UpdateStrategy.Type
+
+	testStrategy2 := []Test{
+		{"Strategy should be OnDelete", appsv1.OnDeleteStatefulSetStrategyType, strategy},
+	}
+	verifyTests(testStrategy2, t)
+
+	// Remove UpdateStrategy
+	runtimeStatefulSet = &appstacksv1beta2.RuntimeComponentStatefulSet{}
+	spec.StatefulSet = runtimeStatefulSet
+	statefulSet, runtime = appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
+	CustomizeStatefulSet(&statefulSet, runtime)
+
+	strategy = statefulSet.Spec.UpdateStrategy.Type
+
+	testStrategy3 := []Test{
+		{"Strategy should be RollingUpdate", appsv1.RollingUpdateStatefulSetStrategyType, strategy},
+	}
+	verifyTests(testStrategy3, t)
+}
+
 func TestCustomizeRoute(t *testing.T) {
 	logger := zap.New()
 	logf.SetLogger(logger)
-	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
-	route, runtime := &routev1.Route{}, createRuntimeComponent(name, namespace, spec)
 
+	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service, Expose: &expose}
+	route, runtime := &routev1.Route{}, createRuntimeComponent(objMetaAnnos, spec)
+
+	//t.Errorf("route: (%v)", *route)
 	CustomizeRoute(route, runtime, "", "", "", "")
 
 	//TestGetLabels
 	testCR := []Test{
 		{"Route labels", name, route.Labels["app.kubernetes.io/instance"]},
+		{"Route annotations", annotations, route.Annotations},
 		{"Route target kind", "Service", route.Spec.To.Kind},
 		{"Route target name", name, route.Spec.To.Name},
 		{"Route target weight", int32(100), *route.Spec.To.Weight},
 		{"Route service target port", intstr.FromString(strconv.Itoa(int(runtime.Spec.Service.Port)) + "-tcp"), route.Spec.Port.TargetPort},
 	}
+	verifyTests(testCR, t)
 
+	helper := routev1.TLSTerminationEdge
+	helper2 := routev1.InsecureEdgeTerminationPolicyNone
+	runtime.Spec.Route = &appstacksv1beta2.RuntimeComponentRoute{Host: "routeHost", Path: "routePath", Termination: &helper, InsecureEdgeTerminationPolicy: &helper2}
+
+	CustomizeRoute(route, runtime, key, crt, ca, destCACert)
+
+	//TestEdge
+	testCR = []Test{
+		{"Route host", "routeHost", route.Spec.Host},
+		{"Route host", "routePath", route.Spec.Path},
+		{"Route Certificate", crt, route.Spec.TLS.Certificate},
+		{"Route CACertificate", ca, route.Spec.TLS.CACertificate},
+		{"Route Key", key, route.Spec.TLS.Key},
+		{"Route DestinationCertificate", "", route.Spec.TLS.DestinationCACertificate},
+		{"Route InsecureEdgeTerminationPolicy", helper2, route.Spec.TLS.InsecureEdgeTerminationPolicy},
+	}
+	verifyTests(testCR, t)
+
+	helper = routev1.TLSTerminationReencrypt
+	runtime.Spec.Route = &appstacksv1beta2.RuntimeComponentRoute{Termination: &helper, InsecureEdgeTerminationPolicy: &helper2}
+
+	CustomizeRoute(route, runtime, key, crt, ca, destCACert)
+
+	//TestReencrypt
+	testCR = []Test{
+		{"Route Certificate", crt, route.Spec.TLS.Certificate},
+		{"Route CACertificate", ca, route.Spec.TLS.CACertificate},
+		{"Route Key", key, route.Spec.TLS.Key},
+		{"Route DestinationCertificate", destCACert, route.Spec.TLS.DestinationCACertificate},
+		{"Route InsecureEdgeTerminationPolicy", helper2, route.Spec.TLS.InsecureEdgeTerminationPolicy},
+		{"Route Target Port", "8443-tcp", route.Spec.Port.TargetPort.StrVal},
+	}
+	verifyTests(testCR, t)
+
+	helper = routev1.TLSTerminationPassthrough
+	runtime.Spec.Route = &appstacksv1beta2.RuntimeComponentRoute{Termination: &helper}
+	runtime.Spec.Service.PortName = svcPortName
+
+	CustomizeRoute(route, runtime, key, crt, ca, destCACert)
+
+	//TestPassthrough
+	testCR = []Test{
+		{"Route Certificate", "", route.Spec.TLS.Certificate},
+		{"Route CACertificate", "", route.Spec.TLS.CACertificate},
+		{"Route Key", "", route.Spec.TLS.Key},
+		{"Route DestinationCertificate", "", route.Spec.TLS.DestinationCACertificate},
+		{"Route Target Port", svcPortName, route.Spec.Port.TargetPort.StrVal},
+	}
+	verifyTests(testCR, t)
+}
+
+func TestErrorIsNoMatchesForKind(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	newError := errors.New("test error")
+	errorValue := ErrorIsNoMatchesForKind(newError, "kind", "version")
+
+	testCR := []Test{
+		{"Error", false, errorValue},
+	}
 	verifyTests(testCR, t)
 }
 
@@ -113,12 +334,12 @@ func TestCustomizeService(t *testing.T) {
 	logf.SetLogger(logger)
 
 	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
-	svc, runtime := &corev1.Service{}, createRuntimeComponent(name, namespace, spec)
+	svc, runtime := &corev1.Service{}, createRuntimeComponent(objMeta, spec)
 
 	CustomizeService(svc, runtime)
 	testCS := []Test{
 		{"Service number of exposed ports", 1, len(svc.Spec.Ports)},
-		{"Sercice first exposed port", runtime.Spec.Service.Port, svc.Spec.Ports[0].Port},
+		{"Service first exposed port", runtime.Spec.Service.Port, svc.Spec.Ports[0].Port},
 		{"Service first exposed target port", intstr.FromInt(int(runtime.Spec.Service.Port)), svc.Spec.Ports[0].TargetPort},
 		{"Service type", *runtime.Spec.Service.Type, svc.Spec.Type},
 		{"Service selector", name, svc.Spec.Selector["app.kubernetes.io/instance"]},
@@ -130,12 +351,53 @@ func TestCustomizeService(t *testing.T) {
 
 	// verify optional nodePort functionality in NodePort service
 	verifyTests(optionalNodePortFunctionalityTests(), t)
+
+	additionalPortsTests(t)
+}
+
+func additionalPortsTests(t *testing.T) {
+	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
+	svc, runtime := &corev1.Service{}, createRuntimeComponent(objMeta, spec)
+	runtime.Spec.Service.Ports = ports
+
+	CustomizeService(svc, runtime)
+
+	testCS := []Test{
+		{"Service number of exposed ports", 3, len(svc.Spec.Ports)},
+		{"Second exposed port", ports[0].Port, svc.Spec.Ports[1].Port},
+		{"Second exposed target port", targetHelper, svc.Spec.Ports[1].TargetPort.IntVal},
+		{"Second exposed port name", ports[0].Name, svc.Spec.Ports[1].Name},
+		{"Second nodeport", ports[0].NodePort, svc.Spec.Ports[1].NodePort},
+		{"Third exposed port", ports[1].Port, svc.Spec.Ports[2].Port},
+		{"Third exposed port name", fmt.Sprint(ports[1].Port) + "-tcp", svc.Spec.Ports[2].Name},
+		{"Third nodeport", ports[1].NodePort, svc.Spec.Ports[2].NodePort},
+	}
+	verifyTests(testCS, t)
+
+	runtime.Spec.Service.Ports = runtime.Spec.Service.Ports[:len(runtime.Spec.Service.Ports)-1]
+	runtime.Spec.Service.Ports[0].NodePort = 3000
+	runtime.Spec.Service.Type = &serviceType2
+	CustomizeService(svc, runtime)
+
+	testCS = []Test{
+		{"Service number of exposed ports", 2, len(svc.Spec.Ports)},
+		{"First nodeport", 3000, svc.Spec.Ports[0].NodePort},
+		{"Port type", serviceType2, svc.Spec.Type},
+	}
+
+	runtime.Spec.Service.Ports = nil
+	CustomizeService(svc, runtime)
+
+	testCS = []Test{
+		{"Service number of exposed ports", 1, len(svc.Spec.Ports)},
+	}
+	verifyTests(testCS, t)
 }
 
 func optionalTargetPortFunctionalityTests() []Test {
 	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
 	spec.Service.TargetPort = &targetPort
-	svc, runtime := &corev1.Service{}, createRuntimeComponent(name, namespace, spec)
+	svc, runtime := &corev1.Service{}, createRuntimeComponent(objMeta, spec)
 
 	CustomizeService(svc, runtime)
 	testCS := []Test{
@@ -152,7 +414,7 @@ func optionalNodePortFunctionalityTests() []Test {
 	serviceType := corev1.ServiceTypeNodePort
 	service := &appstacksv1beta2.RuntimeComponentService{Type: &serviceType, Port: 8443, NodePort: &nodePort}
 	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
-	svc, runtime := &corev1.Service{}, createRuntimeComponent(name, namespace, spec)
+	svc, runtime := &corev1.Service{}, createRuntimeComponent(objMeta, spec)
 
 	CustomizeService(svc, runtime)
 	testCS := []Test{
@@ -166,7 +428,7 @@ func optionalNodePortFunctionalityTests() []Test {
 	return testCS
 }
 
-// Partial test for unittest TestCustomizeAffinity bewlow
+// Partial test for unittest TestCustomizeAffinity below
 func partialTestCustomizeNodeAffinity(t *testing.T) {
 	// required during scheduling ignored during execution
 	rDSIDE := corev1.NodeSelector{
@@ -211,7 +473,7 @@ func partialTestCustomizeNodeAffinity(t *testing.T) {
 		ApplicationImage: appImage,
 		Affinity:         &affinityConfig,
 	}
-	affinity, runtime := &corev1.Affinity{}, createRuntimeComponent(name, namespace, spec)
+	affinity, runtime := &corev1.Affinity{}, createRuntimeComponent(objMeta, spec)
 	CustomizeAffinity(affinity, runtime)
 
 	expectedMatchExpressions := []corev1.NodeSelectorRequirement{
@@ -261,7 +523,7 @@ func partialTestCustomizePodAffinity(t *testing.T) {
 		ApplicationImage: appImage,
 		Affinity:         &affinityConfig,
 	}
-	affinity, runtime := &corev1.Affinity{}, createRuntimeComponent(name, namespace, spec)
+	affinity, runtime := &corev1.Affinity{}, createRuntimeComponent(objMeta, spec)
 	CustomizeAffinity(affinity, runtime)
 
 	testCPA := []Test{
@@ -276,6 +538,7 @@ func partialTestCustomizePodAffinity(t *testing.T) {
 func TestCustomizeAffinity(t *testing.T) {
 	logger := zap.New()
 	logf.SetLogger(logger)
+
 	partialTestCustomizeNodeAffinity(t)
 	partialTestCustomizePodAffinity(t)
 }
@@ -297,7 +560,7 @@ func TestCustomizePodSpecAnnotations(t *testing.T) {
 	}
 
 	// No dep or set, annotation should be empty
-	pts1, runtime1 := &corev1.PodTemplateSpec{}, createRuntimeComponent(name, namespace, spec)
+	pts1, runtime1 := &corev1.PodTemplateSpec{}, createRuntimeComponent(objMeta, spec)
 	CustomizePodSpec(pts1, runtime1)
 	annolen1 := len(pts1.Annotations)
 	testAnnotations1 := []Test{
@@ -306,8 +569,9 @@ func TestCustomizePodSpecAnnotations(t *testing.T) {
 	verifyTests(testAnnotations1, t)
 
 	// dep but not set, annotation should be dep annotations
+	deployment := &appstacksv1beta2.RuntimeComponentDeployment{Annotations: deploymentAnnos}
 	spec.Deployment = deployment
-	pts2, runtime2 := &corev1.PodTemplateSpec{}, createRuntimeComponent(name, namespace, spec)
+	pts2, runtime2 := &corev1.PodTemplateSpec{}, createRuntimeComponent(objMeta, spec)
 	CustomizePodSpec(pts2, runtime2)
 	annolen2 := len(pts2.Annotations)
 	anno2 := pts2.Annotations["depAnno"]
@@ -319,8 +583,9 @@ func TestCustomizePodSpecAnnotations(t *testing.T) {
 
 	// set but not dep, annotation should be set annotations
 	spec.Deployment = nil
+	statefulSet := &appstacksv1beta2.RuntimeComponentStatefulSet{Annotations: ssAnnos}
 	spec.StatefulSet = statefulSet
-	pts3, runtime3 := &corev1.PodTemplateSpec{}, createRuntimeComponent(name, namespace, spec)
+	pts3, runtime3 := &corev1.PodTemplateSpec{}, createRuntimeComponent(objMeta, spec)
 	CustomizePodSpec(pts3, runtime3)
 	annolen3 := len(pts3.Annotations)
 	anno3 := pts3.Annotations["setAnno"]
@@ -332,7 +597,7 @@ func TestCustomizePodSpecAnnotations(t *testing.T) {
 
 	// dep and set, annotation should be set annotations
 	spec.Deployment = deployment
-	pts4, runtime4 := &corev1.PodTemplateSpec{}, createRuntimeComponent(name, namespace, spec)
+	pts4, runtime4 := &corev1.PodTemplateSpec{}, createRuntimeComponent(objMeta, spec)
 	CustomizePodSpec(pts4, runtime4)
 	annolen4 := len(pts4.Annotations)
 	anno4 := pts4.Annotations["setAnno"]
@@ -341,7 +606,6 @@ func TestCustomizePodSpecAnnotations(t *testing.T) {
 		{"Wrong number of annotations", 1, annolen4},
 	}
 	verifyTests(testAnnotations4, t)
-
 }
 
 func TestCustomizePodSpec(t *testing.T) {
@@ -359,7 +623,7 @@ func TestCustomizePodSpec(t *testing.T) {
 		EnvFrom:          envFrom,
 		Volumes:          []corev1.Volume{volume},
 	}
-	pts, runtime := &corev1.PodTemplateSpec{}, createRuntimeComponent(name, namespace, spec)
+	pts, runtime := &corev1.PodTemplateSpec{}, createRuntimeComponent(objMeta, spec)
 	// else cond
 	CustomizePodSpec(pts, runtime)
 	noCont := len(pts.Spec.Containers)
@@ -386,7 +650,7 @@ func TestCustomizePodSpec(t *testing.T) {
 		ServiceAccountName: &serviceAccountName,
 		Affinity:           &affinityConfig,
 	}
-	runtime = createRuntimeComponent(name, namespace, spec)
+	runtime = createRuntimeComponent(objMeta, spec)
 	CustomizePodSpec(pts, runtime)
 	ptsCSAN := pts.Spec.ServiceAccountName
 
@@ -419,7 +683,7 @@ func TestCustomizePersistence(t *testing.T) {
 
 	runtimeStatefulSet := &appstacksv1beta2.RuntimeComponentStatefulSet{Storage: &storage}
 	spec := appstacksv1beta2.RuntimeComponentSpec{StatefulSet: runtimeStatefulSet}
-	statefulSet, runtime := &appsv1.StatefulSet{}, createRuntimeComponent(name, namespace, spec)
+	statefulSet, runtime := &appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
 	statefulSet.Spec.Template.Spec.Containers = []corev1.Container{{}}
 	statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{}
 	// if vct == 0, runtimeVCT != nil, not found
@@ -431,7 +695,7 @@ func TestCustomizePersistence(t *testing.T) {
 	storageNilVCT := appstacksv1beta2.RuntimeComponentStorage{Size: "10Mi", MountPath: "/mnt/data", VolumeClaimTemplate: nil}
 	runtimeStatefulSet = &appstacksv1beta2.RuntimeComponentStatefulSet{Storage: &storageNilVCT}
 	spec = appstacksv1beta2.RuntimeComponentSpec{StatefulSet: runtimeStatefulSet}
-	statefulSet, runtime = &appsv1.StatefulSet{}, createRuntimeComponent(name, namespace, spec)
+	statefulSet, runtime = &appsv1.StatefulSet{}, createRuntimeComponent(objMeta, spec)
 
 	statefulSet.Spec.Template.Spec.Containers = []corev1.Container{{}}
 	statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts = append(statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts, volumeMount)
@@ -453,13 +717,13 @@ func TestCustomizeServiceAccount(t *testing.T) {
 	logf.SetLogger(logger)
 
 	spec := appstacksv1beta2.RuntimeComponentSpec{PullSecret: &pullSecret}
-	sa, runtime := &corev1.ServiceAccount{}, createRuntimeComponent(name, namespace, spec)
+	sa, runtime := &corev1.ServiceAccount{}, createRuntimeComponent(objMeta, spec)
 	CustomizeServiceAccount(sa, runtime)
 	emptySAIPS := sa.ImagePullSecrets[0].Name
 
 	newSecret := "my-new-secret"
 	spec = appstacksv1beta2.RuntimeComponentSpec{PullSecret: &newSecret}
-	runtime = createRuntimeComponent(name, namespace, spec)
+	runtime = createRuntimeComponent(objMeta, spec)
 	CustomizeServiceAccount(sa, runtime)
 
 	testCSA := []Test{
@@ -482,7 +746,7 @@ func TestCustomizeKnativeService(t *testing.T) {
 		EnvFrom:          envFrom,
 		Volumes:          []corev1.Volume{volume},
 	}
-	ksvc, runtime := &servingv1.Service{}, createRuntimeComponent(name, namespace, spec)
+	ksvc, runtime := &servingv1.Service{}, createRuntimeComponent(objMeta, spec)
 
 	CustomizeKnativeService(ksvc, runtime)
 	ksvcNumPorts := len(ksvc.Spec.Template.Spec.Containers[0].Ports)
@@ -507,7 +771,7 @@ func TestCustomizeKnativeService(t *testing.T) {
 		Probes:             probes,
 		Expose:             &expose,
 	}
-	runtime = createRuntimeComponent(name, namespace, spec)
+	runtime = createRuntimeComponent(objMeta, spec)
 	CustomizeKnativeService(ksvc, runtime)
 	ksvcLabelTrueExpose := ksvc.Labels["serving.knative.dev/visibility"]
 
@@ -538,13 +802,13 @@ func TestCustomizeHPA(t *testing.T) {
 	logf.SetLogger(logger)
 
 	spec := appstacksv1beta2.RuntimeComponentSpec{Autoscaling: autoscaling}
-	hpa, runtime := &autoscalingv1.HorizontalPodAutoscaler{}, createRuntimeComponent(name, namespace, spec)
+	hpa, runtime := &autoscalingv1.HorizontalPodAutoscaler{}, createRuntimeComponent(objMeta, spec)
 	CustomizeHPA(hpa, runtime)
 	nilSTRKind := hpa.Spec.ScaleTargetRef.Kind
 
 	runtimeStatefulSet := &appstacksv1beta2.RuntimeComponentStatefulSet{Storage: &storage}
 	spec = appstacksv1beta2.RuntimeComponentSpec{Autoscaling: autoscaling, StatefulSet: runtimeStatefulSet}
-	runtime = createRuntimeComponent(name, namespace, spec)
+	runtime = createRuntimeComponent(objMeta, spec)
 	CustomizeHPA(hpa, runtime)
 	STRKind := hpa.Spec.ScaleTargetRef.Kind
 
@@ -560,16 +824,75 @@ func TestCustomizeHPA(t *testing.T) {
 	verifyTests(testCHPA, t)
 }
 
-func TestCustomizeServiceMonitor(t *testing.T) {
-
+func TestValidate(t *testing.T) {
 	logger := zap.New()
 	logf.SetLogger(logger)
+
+	storage2 := &appstacksv1beta2.RuntimeComponentStorage{}
+	runtimeStatefulSet := &appstacksv1beta2.RuntimeComponentStatefulSet{Storage: storage2}
+	spec = appstacksv1beta2.RuntimeComponentSpec{Service: service, StatefulSet: runtimeStatefulSet}
+
+	runtime := createRuntimeComponent(objMeta, spec)
+
+	result, err := Validate(runtime)
+
+	testVal := []Test{
+		{"Error response", false, result},
+		{"Error response", errors.New("validation failed: must set the field(s): spec.statefulSet.storage.size"), err},
+	}
+	verifyTests(testVal, t)
+
+	storage2 = &appstacksv1beta2.RuntimeComponentStorage{Size: "size"}
+	runtime.Spec.StatefulSet.Storage = storage2
+
+	result, err = Validate(runtime)
+
+	testVal = []Test{
+		{"Error response", false, result},
+		{"Error response", errors.New("validation failed: cannot parse 'size': quantities must match the regular expression '^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$'"), err},
+	}
+	verifyTests(testVal, t)
+
+	runtime.Spec.StatefulSet.Storage = &storage
+
+	result, err = Validate(runtime)
+
+	testVal = []Test{
+		{"Result", true, result},
+		{"Error response", nil, err},
+	}
+	verifyTests(testVal, t)
+}
+
+func TestCreateValidationError(t *testing.T) {
+	result := createValidationError("Test Error")
+
+	testVE := []Test{
+		{"Validation error message", errors.New("validation failed: Test Error"), result},
+	}
+	verifyTests(testVE, t)
+}
+
+func TestRequiredFieldMessage(t *testing.T) {
+	result := requiredFieldMessage("Required")
+
+	testRFM := []Test{
+		{"Required Field Message", "must set the field(s): Required", result},
+	}
+	verifyTests(testRFM, t)
+}
+
+func TestCustomizeServiceMonitor(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
 	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
 
 	params := map[string][]string{
 		"params": {"param1", "param2"},
 	}
 
+	portValue := intstr.FromString("web")
 	// Endpoint for runtime
 	endpointApp := &prometheusv1.Endpoint{
 		Port:            "web",
@@ -581,6 +904,7 @@ func TestCustomizeServiceMonitor(t *testing.T) {
 		Params:          params,
 		ScrapeTimeout:   "myScrapeTimeout",
 		BearerTokenFile: "myBearerTokenFile",
+		TargetPort:      &portValue,
 	}
 	endpointsApp := make([]prometheusv1.Endpoint, 1)
 	endpointsApp[0] = *endpointApp
@@ -592,7 +916,7 @@ func TestCustomizeServiceMonitor(t *testing.T) {
 	selector := &metav1.LabelSelector{MatchLabels: labelMap}
 	smspec := &prometheusv1.ServiceMonitorSpec{Endpoints: endpointsSM, Selector: *selector}
 
-	sm, runtime := &prometheusv1.ServiceMonitor{Spec: *smspec}, createRuntimeComponent(name, namespace, spec)
+	sm, runtime := &prometheusv1.ServiceMonitor{Spec: *smspec}, createRuntimeComponent(objMeta, spec)
 	runtime.Spec.Monitoring = &appstacksv1beta2.RuntimeComponentMonitoring{Labels: labelMap, Endpoints: endpointsApp}
 
 	CustomizeServiceMonitor(sm, runtime)
@@ -632,13 +956,12 @@ func TestCustomizeServiceMonitor(t *testing.T) {
 		{"Service Monitor endpoints scrapeTimeout", appScrapeTimeout, sm.Spec.Endpoints[0].ScrapeTimeout},
 		{"Service Monitor endpoints bearerTokenFile", appBearerTokenFile, sm.Spec.Endpoints[0].BearerTokenFile},
 	}
-
 	verifyTests(testSM, t)
 }
-
 func TestGetCondition(t *testing.T) {
 	logger := zap.New()
 	logf.SetLogger(logger)
+
 	status := &appstacksv1beta2.RuntimeComponentStatus{
 		Conditions: []appstacksv1beta2.StatusCondition{
 			{
@@ -651,11 +974,17 @@ func TestGetCondition(t *testing.T) {
 	cond := GetCondition(conditionType, status)
 	testGC := []Test{{"Set status condition", status.Conditions[0].Status, cond.Status}}
 	verifyTests(testGC, t)
+
+	status = &appstacksv1beta2.RuntimeComponentStatus{}
+	cond = GetCondition(conditionType, status)
+	testGC = []Test{{"Set status condition", 0, len(status.Conditions)}}
+	verifyTests(testGC, t)
 }
 
 func TestSetCondition(t *testing.T) {
 	logger := zap.New()
 	logf.SetLogger(logger)
+
 	status := &appstacksv1beta2.RuntimeComponentStatus{
 		Conditions: []appstacksv1beta2.StatusCondition{
 			{Type: appstacksv1beta2.StatusConditionTypeReconciled},
@@ -708,6 +1037,107 @@ func TestGetWatchNamespaces(t *testing.T) {
 	verifyTests(configMapConstTests, t)
 }
 
+func TestGetOperatorNamespace(t *testing.T) {
+	// Set the logger to development mode for verbose logs
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	os.Setenv("POD_NAMESPACE", "")
+	namespace, err := GetOperatorNamespace()
+	configMapConstTests := []Test{
+		{"namespaces", "", namespace},
+		{"error", nil, err},
+	}
+	verifyTests(configMapConstTests, t)
+}
+
+func TestGetOpenShiftAnnotations(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
+	runtime := createRuntimeComponent(objMeta, spec)
+
+	annos := map[string]string{
+		"image.opencontainers.org/source": "source",
+	}
+	runtime.Annotations = annos
+
+	result := GetOpenShiftAnnotations(runtime)
+
+	annos = map[string]string{
+		"app.openshift.io/vcs-uri": "source",
+	}
+	testOSA := []Test{
+		{"OpenShiftAnnotations", annos["app.openshift.io/vcs-uri"], result["app.openshift.io/vcs-uri"]},
+	}
+	verifyTests(testOSA, t)
+}
+
+func TestIsClusterWide(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	namespaces := []string{"namespace"}
+	result := IsClusterWide(namespaces)
+
+	testCW := []Test{
+		{"One namespace", false, result},
+	}
+	verifyTests(testCW, t)
+
+	namespaces = []string{""}
+	result = IsClusterWide(namespaces)
+
+	testCW = []Test{
+		{"All namespaces", true, result},
+	}
+	verifyTests(testCW, t)
+
+	namespaces = []string{"namespace1", "namespace2"}
+	result = IsClusterWide(namespaces)
+
+	testCW = []Test{
+		{"Two namespaces", false, result},
+	}
+	verifyTests(testCW, t)
+}
+
+func TestCustomizeIngress(t *testing.T) {
+	logger := zap.New()
+	logf.SetLogger(logger)
+
+	ing := networkingv1.Ingress{}
+	var pathType networkingv1.PathType = networkingv1.PathType("Prefix")
+	route := appstacksv1beta2.RuntimeComponentRoute{Host: "routeHost", Path: "myPath", PathType: pathType, Annotations: annotations}
+	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service, Route: &route}
+	runtime := createRuntimeComponent(objMeta, spec)
+
+	CustomizeIngress(&ing, runtime)
+
+	testIng := []Test{
+		{"Ingress Labels", labels["key1"], ing.Labels["key1"]},
+		{"Ingress Annotations", annotations, ing.Annotations},
+		{"Ingress Route Host", "routeHost", ing.Spec.Rules[0].Host},
+		{"Ingress Route Path", "myPath", ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Path},
+		{"Ingress Route PathType", pathType, *ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].PathType},
+		{"Ingress Route ServiceName", name, ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Backend.Service.Name},
+		{"Ingress Route ServicePort", "myservice", ing.Spec.Rules[0].IngressRuleValue.HTTP.Paths[0].Backend.Service.Port.Name},
+		{"Ingress TLS", 0, len(ing.Spec.TLS)},
+	}
+	verifyTests(testIng, t)
+
+	certSecretRef := "my-ref"
+	route = appstacksv1beta2.RuntimeComponentRoute{Host: "routeHost", Path: "myPath", CertificateSecretRef: &certSecretRef}
+
+	CustomizeIngress(&ing, runtime)
+
+	testIng = []Test{
+		{"Ingress TLS SecretName", certSecretRef, ing.Spec.TLS[0].SecretName},
+	}
+	verifyTests(testIng, t)
+}
+
 // Helper Functions
 // Unconditionally set the proper tags for an enabled runtime omponent
 func createAppDefinitionTags(app *appstacksv1beta2.RuntimeComponent) (map[string]string, map[string]string) {
@@ -728,9 +1158,9 @@ func createAppDefinitionTags(app *appstacksv1beta2.RuntimeComponent) (map[string
 	}
 	return label, annotations
 }
-func createRuntimeComponent(n, ns string, spec appstacksv1beta2.RuntimeComponentSpec) *appstacksv1beta2.RuntimeComponent {
+func createRuntimeComponent(obj metav1.ObjectMeta, spec appstacksv1beta2.RuntimeComponentSpec) *appstacksv1beta2.RuntimeComponent {
 	app := &appstacksv1beta2.RuntimeComponent{
-		ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: ns},
+		ObjectMeta: obj,
 		Spec:       spec,
 	}
 	return app
