@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/application-stacks/runtime-component-operator/common"
 	"github.com/pkg/errors"
@@ -392,7 +393,28 @@ func (r *RuntimeComponentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				if err != nil {
 					return err
 				}
-				appstacksutils.CustomizeRoute(route, ba, key, cert, caCert, destCACert)
+
+				routeHost := ""
+				route2 := &routev1.Route{}
+				rerr := r.GetClient().Get(context.TODO(), types.NamespacedName{Name: instance.Name, Namespace: instance.Namespace}, route2)
+				if rerr != nil {
+					// Likely the route doesn't exist as this is a new resource.
+					// just ignore the error
+					//reqLogger.Info("Error getting the route" + rerr.Error())
+				} else {
+					ingressList := route2.Status.Ingress
+					if len(ingressList) == 1 {
+						// If there are multiple ingress, there is no way to work out the correct one to use
+						routeDefault := ingressList[0].RouterCanonicalHostname
+						if dot := strings.Index(routeDefault, "."); dot != -1 {
+							routeHost = routeDefault[(dot + 1):]
+							routeHost = instance.Name + "-" + instance.Namespace + "." + routeHost
+						}
+					}
+
+				}
+				reqLogger.Info("Setting routeHost to " + routeHost)
+				appstacksutils.CustomizeRoute(route, ba, key, cert, caCert, destCACert, routeHost)
 
 				return nil
 			})

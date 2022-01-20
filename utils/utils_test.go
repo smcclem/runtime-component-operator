@@ -94,7 +94,7 @@ func TestCustomizeRoute(t *testing.T) {
 	spec := appstacksv1beta2.RuntimeComponentSpec{Service: service}
 	route, runtime := &routev1.Route{}, createRuntimeComponent(name, namespace, spec)
 
-	CustomizeRoute(route, runtime, "", "", "", "")
+	CustomizeRoute(route, runtime, "", "", "", "", "")
 
 	//TestGetLabels
 	testCR := []Test{

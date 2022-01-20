@@ -93,7 +93,7 @@ func CustomizeStatefulSet(statefulSet *appsv1.StatefulSet, ba common.BaseCompone
 }
 
 // CustomizeRoute ...
-func CustomizeRoute(route *routev1.Route, ba common.BaseComponent, key string, crt string, ca string, destCACert string) {
+func CustomizeRoute(route *routev1.Route, ba common.BaseComponent, key string, crt string, ca string, destCACert string, routerHost string) {
 	obj := ba.(metav1.Object)
 	route.Labels = ba.GetLabels()
 	route.Annotations = MergeMaps(route.Annotations, ba.GetAnnotations())
@@ -101,12 +101,6 @@ func CustomizeRoute(route *routev1.Route, ba common.BaseComponent, key string, c
 	if ba.GetRoute() != nil {
 		rt := ba.GetRoute()
 		route.Annotations = MergeMaps(route.Annotations, rt.GetAnnotations())
-
-		host := rt.GetHost()
-		if host == "" && common.Config[common.OpConfigDefaultHostname] != "" {
-			host = obj.GetName() + "-" + obj.GetNamespace() + "." + common.Config[common.OpConfigDefaultHostname]
-		}
-		route.Spec.Host = host
 		route.Spec.Path = rt.GetPath()
 		if ba.GetRoute().GetTermination() != nil {
 			if route.Spec.TLS == nil {
@@ -138,6 +132,20 @@ func CustomizeRoute(route *routev1.Route, ba common.BaseComponent, key string, c
 			}
 		}
 	}
+
+	host := ""
+	// first try to get host from the component route spec
+	if ba.GetRoute() != nil && ba.GetRoute().GetHost() != "" {
+		host = ba.GetRoute().GetHost()
+	} else if common.Config[common.OpConfigDefaultHostname] != "" {
+		// If not from the component spec, look for a default value in the config map
+		host = common.Config[common.OpConfigDefaultHostname]
+	} else {
+		// Lastly use a host derived from the routeCanonicalName field
+		host = routerHost
+	}
+	route.Spec.Host = host
+
 	if ba.GetRoute() == nil || ba.GetRoute().GetTermination() == nil {
 		route.Spec.TLS = nil
 	}
