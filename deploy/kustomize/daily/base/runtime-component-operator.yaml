@@ -1,4 +1,3 @@
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -7,6 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: olm
     app.kubernetes.io/name: runtime-component-operator
   name: rco-controller-manager
+  namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -16,6 +16,7 @@ metadata:
     app.kubernetes.io/managed-by: olm
     app.kubernetes.io/name: runtime-component-operator
   name: rco-leader-election-role
+  namespace: default
 rules:
 - apiGroups:
   - ""
@@ -66,6 +67,7 @@ metadata:
     app.kubernetes.io/managed-by: olm
     app.kubernetes.io/name: runtime-component-operator
   name: rco-manager-role
+  namespace: default
 rules:
 - apiGroups:
   - apps
@@ -73,7 +75,13 @@ rules:
   - deployments
   - statefulsets
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -86,7 +94,13 @@ rules:
   resources:
   - horizontalpodautoscalers
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -95,14 +109,26 @@ rules:
   - serviceaccounts
   - services
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:
   - pods
   - pods/exec
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - image.openshift.io
   resources:
@@ -117,13 +143,25 @@ rules:
   resources:
   - servicemonitors
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - rc.app.stacks
   resources:
@@ -131,7 +169,13 @@ rules:
   - runtimecomponents/finalizers
   - runtimecomponents/status
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - rc.app.stacks
   resources:
@@ -139,20 +183,38 @@ rules:
   - runtimeoperations/finalizers
   - runtimeoperations/status
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - route.openshift.io
   resources:
   - routes
   - routes/custom-host
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - serving.knative.dev
   resources:
   - services
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -162,6 +224,7 @@ metadata:
     app.kubernetes.io/managed-by: olm
     app.kubernetes.io/name: runtime-component-operator
   name: rco-leader-election-rolebinding
+  namespace: default
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -169,6 +232,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: rco-controller-manager
+  namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -178,6 +242,7 @@ metadata:
     app.kubernetes.io/managed-by: olm
     app.kubernetes.io/name: runtime-component-operator
   name: rco-manager-rolebinding
+  namespace: default
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -185,6 +250,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: rco-controller-manager
+  namespace: default
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -195,6 +261,7 @@ metadata:
     app.kubernetes.io/name: runtime-component-operator
     control-plane: controller-manager
   name: rco-controller-manager
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -217,11 +284,11 @@ spec:
         command:
         - /manager
         env:
-        - name: OPERATOR_NAMESPACE
+        - name: WATCH_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: WATCH_NAMESPACE
+        - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace

@@ -42,6 +42,13 @@ IMG ?= applicationstacks/operator:daily
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:crdVersions=v1,trivialVersions=true,preserveUnknownFields=false,generateEmbeddedObjectMeta=true"
 
+# Produce files under deploy/kustomize/daily with default namespace unless WATCH_NAMESPACE is set
+ifeq (,${WATCH_NAMESPACE})
+KUSTOMIZE_NAMESPACE = default
+else
+KUSTOMIZE_NAMESPACE = ${WATCH_NAMESPACE}
+endif
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -148,6 +155,11 @@ bundle: manifests setup
 	operator-sdk generate kustomize manifests -q
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/manifests | operator-sdk generate bundle -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
+
+	$(KUSTOMIZE) build config/kustomize/crd -o deploy/kustomize/daily/base/runtime-component-crd.yaml
+	cd config/kustomize/operator && $(KUSTOMIZE) edit set namespace $(KUSTOMIZE_NAMESPACE)
+	$(KUSTOMIZE) build config/kustomize/operator -o deploy/kustomize/daily/base/runtime-component-operator.yaml
+
 	mv config/manifests/patches/csvAnnotations.yaml.bak config/manifests/patches/csvAnnotations.yaml
 	operator-sdk bundle validate ./bundle
 
