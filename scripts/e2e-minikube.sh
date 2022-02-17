@@ -25,9 +25,9 @@ setup_env() {
 # install_rco: Kustomize and install Runtime-Component-Operator
 install_rco() {
     echo "****** Installing RCO in namespace: ${TEST_NAMESPACE}"
-    kubectl apply -f bundle/manifests/rc.app.stacks_runtimecomponents.yaml
-    kubectl apply -f bundle/manifests/rc.app.stacks_runtimeoperations.yaml
-    kubectl apply -f deploy/kustomize/daily/base/runtime-component-operator.yaml -n ${TEST_NAMESPACE}
+    make bundle KUSTOMIZE_NAMESPACE="${TEST_NAMESPACE}"
+    kubectl apply -f deploy/kustomize/daily/base/runtime-component-crd.yaml
+    kubectl apply -f deploy/kustomize/daily/base/runtime-component-operator.yaml
 }
 
 function install_tools() {
@@ -35,7 +35,6 @@ function install_tools() {
     kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/bundle.yaml
     
     echo "****** Installing Knative"
-    minikube addons enable registry
     kubectl apply -f https://github.com/knative/serving/releases/download/v0.24.0/serving-crds.yaml
     kubectl apply -f https://github.com/knative/eventing/releases/download/v0.24.0/eventing-crds.yaml
   
