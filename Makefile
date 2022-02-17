@@ -42,12 +42,8 @@ IMG ?= applicationstacks/operator:daily
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:crdVersions=v1,trivialVersions=true,preserveUnknownFields=false,generateEmbeddedObjectMeta=true"
 
-# Produce files under deploy/kustomize/daily with default namespace unless WATCH_NAMESPACE is set
-ifeq (,${WATCH_NAMESPACE})
+# Produce files under deploy/kustomize/daily with default namespace
 KUSTOMIZE_NAMESPACE = default
-else
-KUSTOMIZE_NAMESPACE = ${WATCH_NAMESPACE}
-endif
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
