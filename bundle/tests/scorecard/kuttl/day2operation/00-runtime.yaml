@@ -6,6 +6,8 @@ spec:
   # Add fields here
   applicationImage: 'navidsh/demo-day'
   replicas: 1
+  securityContext:
+    runAsUser: 1000720001
   statefulSet:
     storage:
       size: 100Mi

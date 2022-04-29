@@ -6,4 +6,5 @@ spec:
   # Add fields here
   applicationImage: imagestream-example
   replicas: 1
-
+  securityContext:
+    runAsUser: 1000720001

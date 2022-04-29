@@ -6,5 +6,7 @@ metadata:
 spec:
   applicationImage: k8s.gcr.io/pause:2.0
   replicas: 1
+  securityContext:
+    runAsUser: 1000720001
   service:
     port: 9080

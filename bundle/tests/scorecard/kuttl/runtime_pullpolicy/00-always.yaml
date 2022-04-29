@@ -5,5 +5,7 @@ metadata:
 spec:
   applicationImage: navidsh/demo-day
   replicas: 1
+  securityContext:
+    runAsUser: 1000720001
   pullPolicy: "Always"
 

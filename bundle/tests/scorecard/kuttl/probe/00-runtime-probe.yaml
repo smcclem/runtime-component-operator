@@ -9,6 +9,8 @@ spec:
     type: "ClusterIP"
     port: 3000
   replicas: 1
+  securityContext:
+    runAsUser: 1000720001
   probes:
     startup:
       failureThreshold: 10

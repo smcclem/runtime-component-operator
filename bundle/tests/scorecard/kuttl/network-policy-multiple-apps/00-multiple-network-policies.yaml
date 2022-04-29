@@ -5,6 +5,8 @@ metadata:
 spec:
   applicationName: network-policy-test
   applicationImage: k8s.gcr.io/pause:2.0
+  securityContext:
+    runAsUser: 1000720001
   expose: true
   service:
     port: 9080
@@ -19,6 +21,8 @@ metadata:
 spec:
   applicationName: network-policy-test
   applicationImage: k8s.gcr.io/pause:2.0
+  securityContext:
+    runAsUser: 1000720001
   service:
     port: 9080
     ports:

@@ -33,12 +33,14 @@ install_rco() {
 function install_tools() {
     echo "****** Installing Prometheus"
     kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/bundle.yaml
-    
+
     echo "****** Installing Knative"
-    minikube addons enable registry
-    kubectl apply -f https://github.com/knative/serving/releases/download/v0.24.0/serving-crds.yaml
-    kubectl apply -f https://github.com/knative/eventing/releases/download/v0.24.0/eventing-crds.yaml
-  
+    kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.3.0/serving-crds.yaml
+    kubectl apply -f https://github.com/knative/eventing/releases/download/knative-v1.3.0/eventing-crds.yaml
+
+    echo "****** Installing Cert Manager"
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.0/cert-manager.yaml
+
     echo "****** Enabling Ingress"
     minikube addons enable ingress
 }
@@ -105,13 +107,15 @@ main() {
     echo "****** Starting minikube scorecard tests..."
     operator-sdk scorecard --verbose --selector=suite=kuttlsuite --namespace "${TEST_NAMESPACE}" --service-account scorecard-kuttl --wait-time 30m ./bundle || {
         echo "****** Scorecard tests failed..."
+        echo "****** Cleaning up test environment..."
+        cleanup_test
+        cleanup_env
         exit 1
     }
     result=$?
 
-    cleanup_test
-
     echo "****** Cleaning up test environment..."
+    cleanup_test
     cleanup_env
 
     return $result
